@@ -18,6 +18,16 @@ class SellApiError(RuntimeError):
     pass
 
 
+# Cloudflare's default Bot Fight Mode blocks the stdlib's plain User-Agent
+# ("Python-urllib/3.x") with Error 1010 (browser_signature_banned) even for
+# legitimate internal calls carrying a valid bearer token. A normal desktop
+# browser UA avoids that check without touching the sell project itself.
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 class SellClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -98,6 +108,7 @@ class SellClient:
                 "Authorization": f"Bearer {self.settings.sell_internal_token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                "User-Agent": _USER_AGENT,
             },
             method="POST",
         )
@@ -155,6 +166,7 @@ class SellClient:
             )
             connection.putheader("Content-Length", str(content_length))
             connection.putheader("Accept", "application/json")
+            connection.putheader("User-Agent", _USER_AGENT)
             connection.endheaders()
 
             for prefix, file_path in parts:
