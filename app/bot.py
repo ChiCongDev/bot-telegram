@@ -10,6 +10,7 @@ from .config import Settings
 from .draft_store import DraftStore
 from .models import ProductDraft
 from .nlp_parser import parse_product_message, remove_accents
+from .order_flow import OrderFlow, OrderStore, SessionStore
 from .sell_client import SellApiError, SellClient
 from .telegram_gateway import TelegramGateway
 
@@ -20,7 +21,17 @@ class ProductBot:
         self.telegram = TelegramGateway(settings.telegram_bot_token)
         self.sell = SellClient(settings)
         self.drafts = DraftStore(settings.bot_data_dir)
+        self.orders = OrderFlow(
+            self.telegram,
+            self.sell,
+            OrderStore(settings.bot_data_dir),
+            SessionStore(settings.bot_data_dir),
+        )
         self.offset: int | None = None
+        # Album photos (same media_group_id) arrive as separate updates; we
+        # accumulate their "ảnh chung" confirmations here and emit ONE message
+        # per album at the end of each poll batch. Keyed by chat_id.
+        self._pending_albums: dict[Any, dict[str, Any]] = {}
 
     def run_forever(self) -> None:
         while True:
@@ -28,6 +39,9 @@ class ProductBot:
                 for update in self.telegram.get_updates(self.offset):
                     self.offset = int(update["update_id"]) + 1
                     self.handle_update(update)
+                # A Telegram album is delivered within one getUpdates batch, so
+                # flushing here collapses its per-photo confirmations into one.
+                self._flush_pending_albums()
             except Exception as exc:
                 print(f"bot loop error: {exc}")
                 time.sleep(3)
@@ -58,6 +72,14 @@ class ProductBot:
         if not text:
             return
 
+        # An in-progress order (đơn order) captures all plain text until it is
+        # confirmed or cancelled, so product parsing never runs mid-order.
+        if self.orders.is_active(chat_id):
+            self.orders.handle_text(
+                chat_id, telegram_user_id, text, message.get("message_id")
+            )
+            return
+
         existing = self.drafts.get(chat_id)
         patch = parse_product_message(text, self.settings, existing)
         if existing:
@@ -84,6 +106,10 @@ class ProductBot:
         if callback_id:
             self.telegram.answer_callback_query(callback_id)
         if not chat_id or not telegram_user_id:
+            return
+
+        if data and str(data).startswith("ord:"):
+            self.orders.handle_callback(chat_id, telegram_user_id, data)
             return
 
         if data == "cancel_draft":
@@ -152,7 +178,8 @@ class ProductBot:
                 "Thuộc tính Màu: Đen | Trắng\n"
                 "Gửi ảnh không caption để làm ảnh chung; caption 'SKU: ADI-001-S' "
                 "để gắn ảnh riêng sau khi /xem.\n"
-                "Lệnh: /id, /xem, /taomoi, /huy.",
+                "Tạo đơn order: /order (đăng nhập rồi làm theo hướng dẫn), hủy: /huyorder, đăng xuất: /dangxuat.\n"
+                "Lệnh: /id, /xem, /taomoi, /huy, /order, /huyorder, /dangxuat.",
             )
             return
         if command == "/id":
@@ -170,6 +197,15 @@ class ProductBot:
         if command == "/huy":
             self._cancel_draft(chat_id)
             self.telegram.send_message(chat_id, "Đã hủy bản nháp hiện tại.")
+            return
+        if command in {"/order", "/donorder"}:
+            self.orders.start(chat_id)
+            return
+        if command == "/huyorder":
+            self.orders.cancel(chat_id)
+            return
+        if command == "/dangxuat":
+            self.orders.logout(chat_id)
             return
         if command in {"/draft", "/xem"}:
             draft = self.drafts.get(chat_id)
@@ -300,7 +336,57 @@ class ProductBot:
                 self._preview_and_show(chat_id, telegram_user_id, draft)
             return
 
+        # A batch of photos sent as one album shares a media_group_id and lands
+        # as separate updates. For plain "ảnh chung" adds, defer the reply and
+        # let _flush_pending_albums() send a single consolidated message per
+        # album. Single photos (no media_group_id) and variant-image adds
+        # (canonical_sku) keep their immediate per-message confirmation.
+        media_group_id = message.get("media_group_id")
+        if media_group_id and not canonical_sku:
+            self._record_album_photo(chat_id, str(media_group_id), len(draft.anhChung))
+            return
+
         self.telegram.send_message(chat_id, label + " Dùng /xem để kiểm tra bản nháp.")
+
+    def _record_album_photo(
+        self,
+        chat_id: int | str,
+        media_group_id: str,
+        total_common_images: int,
+    ) -> None:
+        info = self._pending_albums.get(chat_id)
+        if info is not None and info.get("group_id") != media_group_id:
+            # A different album for the same chat arrived before the previous
+            # one was flushed — emit the earlier summary now, then start fresh.
+            self._send_album_summary(chat_id, info)
+            info = None
+        if info is None:
+            info = {"group_id": media_group_id, "added": 0, "total": total_common_images}
+            self._pending_albums[chat_id] = info
+        info["added"] += 1
+        info["total"] = total_common_images
+
+    def _flush_pending_albums(self) -> None:
+        if not self._pending_albums:
+            return
+        pending = self._pending_albums
+        self._pending_albums = {}
+        for chat_id, info in pending.items():
+            self._send_album_summary(chat_id, info)
+
+    def _send_album_summary(self, chat_id: int | str, info: dict[str, Any]) -> None:
+        added = int(info.get("added", 0))
+        if added <= 0:
+            return
+        total = int(info.get("total", added))
+        if added == total:
+            text = f"Đã thêm {added} ảnh chung. Dùng /xem để kiểm tra bản nháp."
+        else:
+            text = (
+                f"Đã thêm {added} ảnh chung (tổng {total})."
+                " Dùng /xem để kiểm tra bản nháp."
+            )
+        self.telegram.send_message(chat_id, text)
 
     def _preview_and_show(
         self,

@@ -8,6 +8,7 @@ from app.bot import ProductBot
 from app.config import Settings
 from app.draft_store import DraftStore
 from app.models import ProductDraft
+from app.order_flow import OrderFlow, OrderStore, SessionStore
 
 
 def make_settings() -> Settings:
@@ -32,6 +33,12 @@ class BotTextFlowTest(unittest.TestCase):
         self.bot.sell = Mock()          # preview will fail gracefully; draft is saved before preview
         self.bot.drafts = DraftStore(Path(self._tmp.name))
         self.bot.offset = None
+        self.bot.orders = OrderFlow(
+            self.bot.telegram,
+            self.bot.sell,
+            OrderStore(Path(self._tmp.name)),
+            SessionStore(Path(self._tmp.name)),
+        )
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -84,6 +91,12 @@ class BotImageCaptionFlowTest(unittest.TestCase):
         self.bot.sell = Mock()
         self.bot.drafts = DraftStore(Path(self._tmp.name))
         self.bot.offset = None
+        self.bot.orders = OrderFlow(
+            self.bot.telegram,
+            self.bot.sell,
+            OrderStore(Path(self._tmp.name)),
+            SessionStore(Path(self._tmp.name)),
+        )
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -205,6 +218,12 @@ class BotImageResetOnNewProductTest(unittest.TestCase):
         self.bot.sell = Mock()
         self.bot.drafts = DraftStore(Path(self._tmp.name))
         self.bot.offset = None
+        self.bot.orders = OrderFlow(
+            self.bot.telegram,
+            self.bot.sell,
+            OrderStore(Path(self._tmp.name)),
+            SessionStore(Path(self._tmp.name)),
+        )
 
     def tearDown(self):
         self._tmp.cleanup()

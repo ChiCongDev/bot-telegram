@@ -43,6 +43,30 @@ class Settings:
         return self.sell_base_url.rstrip("/") + "/api/noi-bo/telegram/san-pham/v2/tao"
 
     @property
+    def sell_order_login_url(self) -> str:
+        return self.sell_base_url.rstrip("/") + "/api/noi-bo/telegram/don-order/dang-nhap"
+
+    @property
+    def sell_order_logout_url(self) -> str:
+        return self.sell_base_url.rstrip("/") + "/api/noi-bo/telegram/don-order/dang-xuat"
+
+    @property
+    def sell_order_customers_url(self) -> str:
+        return self.sell_base_url.rstrip("/") + "/api/noi-bo/telegram/don-order/khach-hang"
+
+    @property
+    def sell_order_employees_url(self) -> str:
+        return self.sell_base_url.rstrip("/") + "/api/noi-bo/telegram/don-order/nhan-vien"
+
+    @property
+    def sell_order_search_product_url(self) -> str:
+        return self.sell_base_url.rstrip("/") + "/api/noi-bo/telegram/don-order/tim-san-pham"
+
+    @property
+    def sell_order_create_url(self) -> str:
+        return self.sell_base_url.rstrip("/") + "/api/noi-bo/telegram/don-order/tao"
+
+    @property
     def media_dir(self) -> Path:
         return self.bot_data_dir / "media"
 

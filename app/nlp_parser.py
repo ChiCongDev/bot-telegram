@@ -251,9 +251,15 @@ def parse_with_rules(text: str) -> ProductDraft:
         [r"gia\s*ban\s*le", r"gia\s*ban", r"gia"],
     )
     draft.giaNhap = extract_money(plain, [r"gia\s*nhap"])
+    # The "(?:\s*-?\s*ctv)?" tail lets the label match the exact way these two
+    # prices are DISPLAYED back to the user ("Giá bán buôn - CTV", "Giá order
+    # buôn - CTV") — people copy that label verbatim, so the "- ctv" between the
+    # label and the number must be skipped instead of blocking the value (the
+    # old pattern only allowed one separator, so "... buon - ctv: 4555" read 0).
+    # The tail is optional, so the bare "gia ban buon: 4555" form still works.
     draft.giaBanBuon = extract_money(
         plain,
-        [r"gia\s*ban\s*buon", r"gia\s*buon"],
+        [r"gia\s*ban\s*buon(?:\s*-?\s*ctv)?", r"gia\s*buon"],
     )
     draft.giaCongTacVien = extract_money(
         plain,
@@ -261,7 +267,7 @@ def parse_with_rules(text: str) -> ProductDraft:
     )
     draft.giaOrderBuonCtv = extract_money(
         plain,
-        [r"gia\s*order\s*buon\s*(?:ctv)?", r"gia\s*order\s*ctv"],
+        [r"gia\s*order\s*buon(?:\s*-?\s*ctv)?", r"gia\s*order\s*ctv"],
     )
     draft.giaOrder = extract_money(
         plain,
@@ -577,13 +583,15 @@ def extract_variants(
 
         numeric_fields = {
             "giaBanLe": [r"gia\s*ban\s*le", r"gia\s*ban"],
-            "giaBanBuon": [r"gia\s*ban\s*buon", r"gia\s*buon"],
+            # Same "- ctv" display-label tolerance as the product-level parser
+            # above, so a per-variant line can also carry "... buon - ctv: N".
+            "giaBanBuon": [r"gia\s*ban\s*buon(?:\s*-?\s*ctv)?", r"gia\s*buon"],
             "giaCongTacVien": [
                 r"gia\s*cong\s*tac\s*vien",
                 r"gia\s*ctv\s*cu",
             ],
             "giaOrderBuonCtv": [
-                r"gia\s*order\s*buon\s*(?:ctv)?",
+                r"gia\s*order\s*buon(?:\s*-?\s*ctv)?",
                 r"gia\s*order\s*ctv",
             ],
             "giaOrder": [r"gia\s*order\s*le", r"gia\s*order"],

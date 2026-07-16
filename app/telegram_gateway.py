@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import uuid
 from pathlib import Path
 import urllib.request
 from typing import Any
@@ -30,6 +32,62 @@ class TelegramGateway:
         if reply_markup:
             payload["reply_markup"] = reply_markup
         self._request("sendMessage", payload)
+
+    def send_photo(
+        self,
+        chat_id: int | str,
+        image_bytes: bytes,
+        filename: str,
+        caption: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> bool:
+        """Upload photo bytes so it renders inline in the chat (no click). Bytes
+        are uploaded (not a URL) because Telegram's servers cannot reach a local
+        Sell instance. Returns False on any failure so the caller can fall back
+        to a plain text message."""
+        boundary = "----TgBotPhoto" + uuid.uuid4().hex
+        fields: dict[str, str] = {"chat_id": str(chat_id)}
+        if caption:
+            fields["caption"] = caption
+        if reply_markup:
+            fields["reply_markup"] = json.dumps(reply_markup)
+
+        body = bytearray()
+        for name, value in fields.items():
+            body += (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
+            ).encode("utf-8")
+        mime = mimetypes.guess_type(filename)[0] or "image/jpeg"
+        body += (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n"
+        ).encode("utf-8")
+        body += bytes(image_bytes)
+        body += f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        request = urllib.request.Request(
+            self.base_url + "/sendPhoto",
+            data=bytes(body),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            return bool(data.get("ok"))
+        except Exception:
+            return False
+
+    def delete_message(self, chat_id: int | str, message_id: int | str) -> None:
+        """Best-effort delete (used to wipe a password message the user typed).
+        Telegram lets a bot delete incoming messages in private chats; any
+        failure (too old, no rights) is swallowed so the flow keeps going."""
+        try:
+            self._request("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        except Exception:
+            pass
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
         payload = {"callback_query_id": callback_query_id}
