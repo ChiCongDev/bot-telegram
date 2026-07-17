@@ -211,6 +211,12 @@ class OrderFlow:
             chat_id, "Đã hủy đơn order." if existed else "Không có đơn order nào đang tạo."
         )
 
+    def clear_silent(self, chat_id: int | str) -> None:
+        """Drop any in-progress order draft without a message (keeps the login
+        session). Used when the user switches to a product flow, so the two
+        flows are mutually exclusive and text isn't captured by the wrong one."""
+        self.store.delete(chat_id)
+
     def _doi_tai_khoan(self, chat_id: int | str) -> None:
         session = self.sessions.get(chat_id)
         if session:

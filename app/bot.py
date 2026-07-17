@@ -11,6 +11,7 @@ from .draft_store import DraftStore
 from .models import ProductDraft
 from .nlp_parser import parse_product_message, remove_accents
 from .order_flow import OrderFlow, OrderStore, SessionStore
+from .product_form import FormModeStore, apply_form_text, render_form
 from .sell_client import SellApiError, SellClient
 from .telegram_gateway import TelegramGateway
 
@@ -27,6 +28,8 @@ class ProductBot:
             OrderStore(settings.bot_data_dir),
             SessionStore(settings.bot_data_dir),
         )
+        # Marks chats in the /taoSP guided-form mode (see product_form.py).
+        self.form_mode = FormModeStore(settings.bot_data_dir)
         self.offset: int | None = None
         # Album photos (same media_group_id) arrive as separate updates; we
         # accumulate their "ảnh chung" confirmations here and emit ONE message
@@ -66,7 +69,13 @@ class ProductBot:
             return
 
         if message.get("photo") or message.get("document"):
-            self._handle_image(message, chat_id, telegram_user_id)
+            # In /taoSP form mode, images attach to the form draft and captions
+            # are read by the numbered-form parser — never the free-text path
+            # that would overwrite the draft (e.g. read "1: abc" as the name).
+            if self.form_mode.is_on(chat_id):
+                self._handle_form_image(message, chat_id, telegram_user_id)
+            else:
+                self._handle_image(message, chat_id, telegram_user_id)
             return
 
         if not text:
@@ -78,6 +87,12 @@ class ProductBot:
             self.orders.handle_text(
                 chat_id, telegram_user_id, text, message.get("message_id")
             )
+            return
+
+        # /taoSP guided form: parse "số: giá trị" instead of free text. The
+        # free-text flow below stays as the fallback when the form is off.
+        if self.form_mode.is_on(chat_id):
+            self._handle_form_text(chat_id, telegram_user_id, text)
             return
 
         existing = self.drafts.get(chat_id)
@@ -112,8 +127,15 @@ class ProductBot:
             self.orders.handle_callback(chat_id, telegram_user_id, data)
             return
 
+        if data == "psp:sua":
+            self.telegram.send_message(
+                chat_id,
+                "Điền tiếp theo 'số: giá trị', gửi ảnh, hoặc bấm '✅ Xác nhận tạo'.",
+            )
+            return
         if data == "cancel_draft":
             self._cancel_draft(chat_id)
+            self.form_mode.off(chat_id)
             self.telegram.send_message(chat_id, "Đã hủy bản nháp.")
             return
         if data != "confirm_product":
@@ -142,6 +164,7 @@ class ProductBot:
 
         self._cleanup_media(draft)
         self.drafts.delete(chat_id)
+        self.form_mode.off(chat_id)
         created = result.get("ket_qua") or {}
         products = created.get("san_phams") or []
         rows = [
@@ -178,8 +201,9 @@ class ProductBot:
                 "Thuộc tính Màu: Đen | Trắng\n"
                 "Gửi ảnh không caption để làm ảnh chung; caption 'SKU: ADI-001-S' "
                 "để gắn ảnh riêng sau khi /xem.\n"
+                "Tạo sản phẩm theo biểu mẫu đánh số: /taoSP.\n"
                 "Tạo đơn order: /order (đăng nhập rồi làm theo hướng dẫn), hủy: /huyorder, đăng xuất: /dangxuat.\n"
-                "Lệnh: /id, /xem, /taomoi, /huy, /order, /huyorder, /dangxuat.",
+                "Lệnh: /taoSP, /id, /xem, /taomoi, /huy, /order, /huyorder, /dangxuat.",
             )
             return
         if command == "/id":
@@ -188,17 +212,27 @@ class ProductBot:
                 f"Telegram User ID của bạn: {telegram_user_id}",
             )
             return
+        if command in {"/taosp", "/taosanpham"}:
+            self._start_form(chat_id)
+            return
         if command == "/taomoi":
+            self.orders.clear_silent(chat_id)
             self._cancel_draft(chat_id)
+            self.form_mode.off(chat_id)
             draft = ProductDraft()
             self.drafts.save(chat_id, draft)
             self.telegram.send_message(chat_id, "Đã mở bản nháp sản phẩm mới.")
             return
         if command == "/huy":
             self._cancel_draft(chat_id)
+            self.form_mode.off(chat_id)
             self.telegram.send_message(chat_id, "Đã hủy bản nháp hiện tại.")
             return
         if command in {"/order", "/donorder"}:
+            # Switching to the order flow clears any product form/draft so
+            # product text isn't captured by the order flow and vice versa.
+            self._cancel_draft(chat_id)
+            self.form_mode.off(chat_id)
             self.orders.start(chat_id)
             return
         if command == "/huyorder":
@@ -212,6 +246,9 @@ class ProductBot:
             if not draft:
                 self.telegram.send_message(chat_id, "Chưa có bản nháp.")
                 return
+            if self.form_mode.is_on(chat_id):
+                self._show_form(chat_id, draft)
+                return
             if draft.missing_required():
                 self._send_missing(chat_id, draft)
                 return
@@ -222,6 +259,111 @@ class ProductBot:
             chat_id,
             "Lệnh không hợp lệ. Dùng /start để xem hướng dẫn.",
         )
+
+    def _start_form(self, chat_id: int | str) -> None:
+        # Fresh numbered draft; clears any leftover product draft + media AND
+        # any in-progress order, so a lingering order can't hijack this flow.
+        self.orders.clear_silent(chat_id)
+        self._cancel_draft(chat_id)
+        draft = ProductDraft()
+        self.drafts.save(chat_id, draft)
+        self.form_mode.on(chat_id)
+        self.telegram.send_message(chat_id, render_form(draft))
+
+    def _handle_form_text(
+        self,
+        chat_id: int | str,
+        telegram_user_id: int | str,
+        text: str,
+    ) -> None:
+        if remove_accents(text.strip()) == "huy":
+            self._cancel_draft(chat_id)
+            self.form_mode.off(chat_id)
+            self.telegram.send_message(chat_id, "Đã hủy bản nháp.")
+            return
+
+        draft = self.drafts.get(chat_id) or ProductDraft()
+        changed = apply_form_text(draft, text)
+        self.drafts.save(chat_id, draft)
+
+        if not changed:
+            self.telegram.send_message(
+                chat_id,
+                "Chưa nhận ra. Nhập theo 'số: giá trị' (vd: 1: giày, 9: 120000), "
+                "hoặc 'màu sắc: đỏ, xanh'. Gõ 'hủy' để thoát.",
+            )
+            return
+
+        self._show_form(chat_id, draft)
+
+    def _show_form(self, chat_id: int | str, draft: ProductDraft) -> None:
+        if draft.missing_required():
+            self.telegram.send_message(
+                chat_id,
+                render_form(draft) + "\n\n⚠ Còn thiếu Tên và/hoặc SKU (⭐). Điền tiếp.",
+            )
+        else:
+            self.telegram.send_message(
+                chat_id, render_form(draft), reply_markup=self._form_buttons()
+            )
+
+    def _handle_form_image(
+        self,
+        message: dict[str, Any],
+        chat_id: int | str,
+        telegram_user_id: int | str,
+    ) -> None:
+        try:
+            file_id, file_size, extension = self._image_file_info(message)
+        except ValueError as exc:
+            self.telegram.send_message(chat_id, str(exc))
+            return
+        if file_size and file_size > self.settings.telegram_max_image_bytes:
+            self.telegram.send_message(chat_id, "Ảnh vượt quá dung lượng cho phép.")
+            return
+
+        draft = self.drafts.get(chat_id) or ProductDraft()
+        if len(draft.anhChung) >= self.settings.telegram_max_common_images:
+            self.telegram.send_message(chat_id, "Đã đạt giới hạn ảnh chung.")
+            return
+
+        media_dir = self.settings.media_dir / self._safe_component(chat_id) / draft.draft_id
+        destination = media_dir / f"{uuid.uuid4().hex}{extension}"
+        try:
+            self.telegram.download_file(
+                file_id, destination, self.settings.telegram_max_image_bytes
+            )
+        except Exception as exc:
+            self.telegram.send_message(chat_id, "Không tải được ảnh: " + str(exc))
+            return
+
+        draft.anhChung.append(str(destination))
+        caption = (message.get("caption") or "").strip()
+        if caption:
+            # Numbered fields + attribute lines only — never wipes the draft.
+            apply_form_text(draft, caption)
+        draft.clean()
+        self.drafts.save(chat_id, draft)
+
+        media_group_id = message.get("media_group_id")
+        if media_group_id:
+            self._record_album_photo(chat_id, str(media_group_id), len(draft.anhChung))
+        else:
+            self.telegram.send_message(
+                chat_id, f"✅ Đã thêm ảnh chung ({len(draft.anhChung)}). Điền tiếp hoặc /xem."
+            )
+
+    @staticmethod
+    def _form_buttons() -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [{"text": "✅ Xác nhận tạo", "callback_data": "confirm_product"}],
+                [
+                    {"text": "✏️ Điền tiếp / Sửa", "callback_data": "psp:sua"},
+                    {"text": "✖ Hủy", "callback_data": "cancel_draft"},
+                ],
+            ]
+        }
 
     def _handle_image(
         self,

@@ -9,6 +9,7 @@ from app.config import Settings
 from app.draft_store import DraftStore
 from app.models import ProductDraft
 from app.order_flow import OrderFlow, OrderStore, SessionStore
+from app.product_form import FormModeStore
 
 
 def make_settings() -> Settings:
@@ -39,6 +40,7 @@ class BotTextFlowTest(unittest.TestCase):
             OrderStore(Path(self._tmp.name)),
             SessionStore(Path(self._tmp.name)),
         )
+        self.bot.form_mode = FormModeStore(Path(self._tmp.name))
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -97,6 +99,7 @@ class BotImageCaptionFlowTest(unittest.TestCase):
             OrderStore(Path(self._tmp.name)),
             SessionStore(Path(self._tmp.name)),
         )
+        self.bot.form_mode = FormModeStore(Path(self._tmp.name))
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -224,6 +227,7 @@ class BotImageResetOnNewProductTest(unittest.TestCase):
             OrderStore(Path(self._tmp.name)),
             SessionStore(Path(self._tmp.name)),
         )
+        self.bot.form_mode = FormModeStore(Path(self._tmp.name))
 
     def tearDown(self):
         self._tmp.cleanup()
