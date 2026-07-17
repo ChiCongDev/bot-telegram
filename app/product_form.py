@@ -51,6 +51,17 @@ def _bound_value(raw: str) -> str:
     return raw.strip().strip(",;").strip()
 
 
+# A numbered field ("…, 12: 333") that follows an attribute clause is a NEW
+# field, not another attribute value — so put each such marker on its own line
+# before attribute extraction, otherwise "màu sắc: 333343, 12: 333" would read
+# "12: 333" as a colour value. (Mirror of _bound_value for the other direction.)
+_TACH_TRUONG_SO_RE = re.compile(r"([,;])(\s*\d{1,2}\s*[:=])")
+
+
+def _tach_truong_so(text: str) -> str:
+    return _TACH_TRUONG_SO_RE.sub(r"\n\2", text)
+
+
 def parse_numbered(text: str) -> dict[int, str]:
     result: dict[int, str] = {}
     markers = list(_MARKER_RE.finditer(text))
@@ -83,7 +94,7 @@ def apply_form_text(draft: ProductDraft, text: str) -> bool:
                 setattr(draft, attr, 0)
         changed = True
 
-    attributes = extract_attributes(text)
+    attributes = extract_attributes(_tach_truong_so(text))
     if attributes:
         # Merge by attribute name so attributes sent across several messages
         # ("màu sắc: …" then "size: …") accumulate instead of overwriting; a
